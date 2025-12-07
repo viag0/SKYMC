@@ -1,402 +1,239 @@
 #!/bin/bash
-
-set -e
+set -euo pipefail
 
 GREEN="\033[0;32m"
 RED="\033[0;31m"
 YELLOW="\033[1;33m"
+CYAN="\033[0;36m"
+PURPLE="\033[0;35m"
 NC="\033[0m"
 
-echo -e "${GREEN}"
-echo "==============================================="
-echo "  SkyMC Addons Installer for Pterodactyl"
-echo "  Project: skymc.xyz"
-echo "==============================================="
+clear
+echo -e "${CYAN}"
+echo " ███████╗██╗  ██╗██╗   ██╗███╗   ███╗ ██████╗ "
+echo " ██╔════╝██║ ██╔╝╚██╗ ██╔╝████╗ ████║██╔════╝ "
+echo " ███████╗█████╔╝  ╚████╔╝ ██╔████╔██║██║      "
+echo " ╚════██║██╔═██╗   ╚██╔╝  ██║╚██╔╝██║██║      "
+echo " ███████║██║  ██╗   ██║   ██║ ╚═╝ ██║╚██████╗ "
+echo " ╚══════╝╚═╝  ╚═╝   ╚═╝   ╚═╝     ╚═╝ ╚═════╝ "
+echo -e "${PURPLE}"
+echo "    SkyMC Addons & Themes Manager for Pterodactyl"
+echo "            Version 1.4.1-STABLE"
+echo "================================================="
 echo -e "${NC}"
 
-read -rp "[?] Panel directory path [/var/www/pterodactyl]: " PANEL_DIR
-PANEL_DIR=${PANEL_DIR:-/var/www/pterodactyl}
+if [ "$EUID" -ne 0 ]; then
+  echo -e "${RED}[!] Run installer as root only.${NC}"
+  exit 1
+fi
 
-read -rp "[?] SkyMC addons directory [/var/skymc]: " SKY_DIR
+AUTO_PANEL=$(find /var/www -maxdepth 3 -name artisan 2>/dev/null | head -n 1 | sed 's|/artisan||')
+
+read -rp "[?] Panel path [${AUTO_PANEL:-/var/www/pterodactyl}]: " PANEL_DIR
+PANEL_DIR=${PANEL_DIR:-${AUTO_PANEL:-/var/www/pterodactyl}}
+
+read -rp "[?] SkyMC Path [/var/skymc]: " SKY_DIR
 SKY_DIR=${SKY_DIR:-/var/skymc}
 
-echo -e "${YELLOW}[*] Using panel directory: ${PANEL_DIR}${NC}"
-echo -e "${YELLOW}[*] Using SkyMC directory: ${SKY_DIR}${NC}"
-
-if [ ! -d "$PANEL_DIR" ]; then
-  echo -e "${RED}[!] Panel directory not found: $PANEL_DIR${NC}"
-  exit 1
-fi
-
-if [ ! -f "$PANEL_DIR/artisan" ]; then
-  echo -e "${RED}[!] artisan not found in panel dir. This doesn't look like a Laravel/Pterodactyl install.${NC}"
-  exit 1
-fi
+[ -f "$PANEL_DIR/artisan" ] || { echo -e "${RED}artisan not found.${NC}"; exit 1; }
 
 cd "$PANEL_DIR"
 
 mkdir -p "$SKY_DIR/addons"
-chown -R www-data:www-data "$SKY_DIR" || true
+chown -R www-data:www-data "$SKY_DIR"
+chmod -R ug+rwX,o-rwx "$SKY_DIR"
 
-# -----------------------------------------------
-# 3) تحديث .env بقيمة SKYMC_ADDONS_PATH
-# -----------------------------------------------
 ENV_FILE="$PANEL_DIR/.env"
-if [ -f "$ENV_FILE" ]; then
-  if grep -q '^SKYMC_ADDONS_PATH=' "$ENV_FILE"; then
-    sed -i "s#^SKYMC_ADDONS_PATH=.*#SKYMC_ADDONS_PATH=${SKY_DIR}/addons#g" "$ENV_FILE"
-  else
-    echo "SKYMC_ADDONS_PATH=${SKY_DIR}/addons" >> "$ENV_FILE"
-  fi
-  echo -e "${YELLOW}[*] Updated .env with SKYMC_ADDONS_PATH=${SKY_DIR}/addons${NC}"
-else
-  echo -e "${RED}[!] .env not found, make sure to set SKYMC_ADDONS_PATH=${SKY_DIR}/addons manually.${NC}"
-fi
+grep -q '^SKYMC_ADDONS_PATH=' "$ENV_FILE" \
+&& sed -i "s|^SKYMC_ADDONS_PATH=.*|SKYMC_ADDONS_PATH=${SKY_DIR}/addons|" "$ENV_FILE" \
+|| echo "SKYMC_ADDONS_PATH=${SKY_DIR}/addons" >> "$ENV_FILE"
 
-# -----------------------------------------------
-# 3.5) Config file: config/skymc.php
-# -----------------------------------------------
-echo -e "${YELLOW}[*] Creating config/skymc.php...${NC}"
-mkdir -p config
-cat << 'PHP' > config/skymc.php
+mkdir -p config app/Models app/Http/Controllers resources/views/admin/addons resources/views/partials
+
+cat > config/skymc.php << 'PHP'
 <?php
-
 return [
-    /*
-    |--------------------------------------------------------------------------
-    | SkyMC Addons Path
-    |--------------------------------------------------------------------------
-    |
-    | This is the base path on the filesystem where SkyMC addons are stored.
-    | It can be overridden via SKYMC_ADDONS_PATH in the .env file.
-    |
-    */
-
     'addons_path' => env('SKYMC_ADDONS_PATH', '/var/skymc/addons'),
 ];
 PHP
 
-# -----------------------------------------------
-# 4) Model: App/Models/SkyAddon.php
-# -----------------------------------------------
-echo -e "${YELLOW}[*] Creating SkyAddon model...${NC}"
-cat << 'PHP' > app/Models/SkyAddon.php
+cat > app/Models/SkyAddon.php << 'PHP'
 <?php
-
 namespace App\Models;
-
 use Illuminate\Database\Eloquent\Model;
 
-class SkyAddon extends Model
-{
-    protected $table = 'sky_addons';
-
-    protected $fillable = [
-        'name',
-        'slug',
-        'enabled',
-    ];
-
-    protected $casts = [
-        'enabled' => 'boolean',
-    ];
+class SkyAddon extends Model {
+    protected $fillable = ['name','slug','enabled'];
+    protected $casts = ['enabled'=>'boolean'];
 }
 PHP
 
-# -----------------------------------------------
-# 5) Migration
-# -----------------------------------------------
-echo -e "${YELLOW}[*] Creating migration for sky_addons...${NC}"
-MIGRATION_FILE="database/migrations/2025_01_01_000000_create_sky_addons_table.php"
-if [ -f "$MIGRATION_FILE" ]; then
-  echo -e "${YELLOW}[!] Migration already exists, skipping.${NC}"
-else
-  cat << 'PHP' > "$MIGRATION_FILE"
+MIG="database/migrations/2025_01_01_000000_create_sky_addons_table.php"
+if [ ! -f "$MIG" ]; then
+cat > "$MIG" << 'PHP'
 <?php
-
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-return new class extends Migration
-{
-    public function up(): void
-    {
-        Schema::create('sky_addons', function (Blueprint $table) {
-            $table->id();
-            $table->string('name');
-            $table->string('slug')->unique();
-            $table->boolean('enabled')->default(false);
-            $table->timestamps();
+return new class extends Migration {
+    public function up() {
+        Schema::create('sky_addons', function(Blueprint $t){
+            $t->id();
+            $t->string('name');
+            $t->string('slug')->unique();
+            $t->boolean('enabled')->default(false);
+            $t->timestamps();
         });
     }
-
-    public function down(): void
-    {
+    public function down() {
         Schema::dropIfExists('sky_addons');
     }
 };
 PHP
 fi
 
-echo -e "${YELLOW}[*] Creating SkyAddonController...${NC}"
-cat << 'PHP' > app/Http/Controllers/SkyAddonController.php
+cat > app/Http/Controllers/SkyAddonController.php << 'PHP'
 <?php
-
 namespace App\Http\Controllers;
 
 use App\Models\SkyAddon;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Response;
 
-class SkyAddonController extends Controller
-{
-    public function index()
-    {
-        $addons = SkyAddon::orderBy('name')->get();
+class SkyAddonController extends Controller {
 
+    public function index(){
         return view('admin.addons.index', [
-            'addons' => $addons,
+            'addons' => SkyAddon::orderBy('name')->get()
         ]);
     }
 
-    public function toggle(Request $request)
-    {
-        $request->validate([
-            'id' => 'required|integer|exists:sky_addons,id',
-        ]);
-
-        $addon = SkyAddon::findOrFail($request->input('id'));
-        $addon->enabled = ! $addon->enabled;
-        $addon->save();
-
-        return back()->with('success', 'Addon status updated.');
+    public function toggle(Request $r){
+        $a = SkyAddon::findOrFail($r->id);
+        $a->enabled = !$a->enabled;
+        $a->save();
+        return back();
     }
 
-    public function delete(Request $request)
-    {
-        $request->validate([
-            'id' => 'required|integer|exists:sky_addons,id',
-        ]);
+    public function delete(Request $r){
+        $a = SkyAddon::findOrFail($r->id);
+        $base = realpath(config('skymc.addons_path'));
+        $dir  = realpath($base.'/'.$a->slug);
 
-        $addon = SkyAddon::findOrFail($request->input('id'));
-
-        $base = config('skymc.addons_path', env('SKYMC_ADDONS_PATH', '/var/skymc/addons'));
-        $targetDir = $base . '/' . $addon->slug;
-
-        if (is_dir($targetDir)) {
-            $this->deleteDirectory($targetDir);
+        if($dir && strpos($dir,$base)===0){
+            File::deleteDirectory($dir);
         }
-
-        $addon->delete();
-
-        return back()->with('success', 'Addon deleted.');
+        $a->delete();
+        return back();
     }
 
-    protected function deleteDirectory($dir)
-    {
-        if (! file_exists($dir)) {
-            return;
-        }
+    public function asset($slug,$file){
+        $allowed = ['css','js','png','jpg','webp','svg'];
+        $ext = strtolower(pathinfo($file,PATHINFO_EXTENSION));
+        if(!in_array($ext,$allowed)) abort(403);
 
-        if (! is_dir($dir)) {
-            @unlink($dir);
-            return;
-        }
+        $base = realpath(config('skymc.addons_path'));
+        $path = realpath($base.'/'.$slug.'/'.$file);
+        if(!$path || strpos($path,$base)!==0) abort(404);
 
-        foreach (scandir($dir) as $item) {
-            if ($item === '.' || $item === '..') {
-                continue;
-            }
-
-            $path = $dir . DIRECTORY_SEPARATOR . $item;
-            if (is_dir($path)) {
-                $this->deleteDirectory($path);
-            } else {
-                @unlink($path);
-            }
-        }
-
-        @rmdir($dir);
-    }
-
-    public function asset($slug, $file)
-    {
-        $base = config('skymc.addons_path', env('SKYMC_ADDONS_PATH', '/var/skymc/addons'));
-        $baseReal = realpath($base);
-        $path = realpath($base . '/' . $slug . '/' . $file);
-
-        if (! $baseReal || ! $path || strncmp($path, $baseReal, strlen($baseReal)) !== 0) {
-            abort(404);
-        }
-
-        if (! file_exists($path)) {
-            abort(404);
-        }
-
-        $mime = mime_content_type($path) ?: 'application/octet-stream';
-
-        return Response::file($path, [
-            'Content-Type' => $mime,
-        ]);
+        return Response::file($path);
     }
 }
 PHP
 
-echo -e "${YELLOW}[*] Creating addons blade view...${NC}"
-mkdir -p resources/views/admin/addons
-
-cat << 'BLADE' > resources/views/admin/addons/index.blade.php
+cat > resources/views/admin/addons/index.blade.php << 'BLADE'
 @extends('layouts.admin')
-
-@section('title')
-    Addons Manager
-@endsection
-
-@section('content-header')
-    <h1>Addons Manager<small>Manage installed addons from SkyMC</small></h1>
-@endsection
+@section('title','SkyMC Addons')
 
 @section('content')
-    @if(session('success'))
-        <div class="alert alert-success">{{ session('success') }}</div>
-    @endif
+<div class="box box-primary">
+  <div class="box-header"><h3>SkyMC Addons</h3></div>
+  <div class="box-body table-responsive">
+    <table class="table table-striped">
+      <thead>
+        <tr>
+          <th>ID</th><th>Name</th><th>Slug</th><th>Status</th><th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        @foreach($addons as $a)
+        <tr>
+          <td>{{ $a->id }}</td>
+          <td>{{ $a->name }}</td>
+          <td>{{ $a->slug }}</td>
+          <td>{{ $a->enabled ? 'Enabled':'Disabled' }}</td>
+          <td style="display:flex;gap:5px">
+            <form method="POST" action="{{ route('admin.addons.toggle') }}">
+              @csrf
+              <input type="hidden" name="id" value="{{ $a->id }}">
+              <button class="btn btn-xs btn-warning">Toggle</button>
+            </form>
 
-    @if(session('error'))
-        <div class="alert alert-danger">{{ session('error') }}</div>
-    @endif
-
-    {{-- Marketplace box --}}
-    <div class="box box-success">
-        <div class="box-header with-border">
-            <h3 class="box-title">SkyMC Marketplace</h3>
-        </div>
-        <div class="box-body">
-            <p>
-                Browse and purchase free or paid addons &amp; themes from the official
-                <strong>SkyMC Marketplace</strong>, then install them on your VPS using a single command.
-            </p>
-            <p>
-                After installing an addon on your VPS (via bash command), it will appear in the list below and can be enabled/disabled here.
-            </p>
-            <a href="https://skymc.xyz/marketplace" target="_blank" class="btn btn-success">
-                <i class="fa fa-shopping-cart"></i> Open Marketplace (skymc.xyz)
-            </a>
-        </div>
-    </div>
-
-    {{-- Installed addons --}}
-    <div class="box box-default">
-        <div class="box-header with-border">
-            <h3 class="box-title">Installed Addons</h3>
-        </div>
-        <div class="box-body table-responsive no-padding">
-            <table class="table table-striped">
-                <thead>
-                    <tr>
-                        <th style="width:60px;">ID</th>
-                        <th>Name</th>
-                        <th>Slug</th>
-                        <th style="width:120px;">Status</th>
-                        <th style="width:200px;">Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                @forelse($addons as $addon)
-                    <tr>
-                        <td>{{ $addon->id }}</td>
-                        <td>{{ $addon->name }}</td>
-                        <td>{{ $addon->slug }}</td>
-                        <td>
-                            @if($addon->enabled)
-                                <span class="label label-success">Enabled</span>
-                            @else
-                                <span class="label label-default">Disabled</span>
-                            @endif
-                        </td>
-                        <td>
-                            <form action="{{ route('admin.addons.toggle') }}" method="POST" style="display:inline-block">
-                                @csrf
-                                <input type="hidden" name="id" value="{{ $addon->id }}">
-                                <button class="btn btn-xs btn-warning" type="submit">
-                                    {{ $addon->enabled ? 'Disable' : 'Enable' }}
-                                </button>
-                            </form>
-
-                            <form action="{{ route('admin.addons.delete') }}" method="POST" style="display:inline-block" onsubmit="return confirm('Delete this addon?');">
-                                @csrf
-                                <input type="hidden" name="id" value="{{ $addon->id }}">
-                                <button class="btn btn-xs btn-danger" type="submit">
-                                    Delete
-                                </button>
-                            </form>
-                        </td>
-                    </tr>
-                @empty
-                    <tr>
-                        <td colspan="5">No addons installed yet. Install addons via SkyMC marketplace bash commands.</td>
-                    </tr>
-                @endforelse
-                </tbody>
-            </table>
-        </div>
-    </div>
+            <form method="POST" action="{{ route('admin.addons.delete') }}" onsubmit="return confirm('Delete this addon?')">
+              @csrf
+              <input type="hidden" name="id" value="{{ $a->id }}">
+              <button class="btn btn-xs btn-danger">Delete</button>
+            </form>
+          </td>
+        </tr>
+        @endforeach
+      </tbody>
+    </table>
+  </div>
+</div>
 @endsection
 BLADE
 
-echo -e "${YELLOW}[*] Patching routes/admin.php...${NC}"
-ADMIN_ROUTES="routes/admin.php"
-if [ ! -f "$ADMIN_ROUTES" ]; then
-  echo -e "${RED}[!] routes/admin.php not found. This is not a standard Pterodactyl install.${NC}"
-else
-  if ! grep -q "SkyAddonController" "$ADMIN_ROUTES"; then
-    sed -i "1a use App\\Http\\Controllers\\SkyAddonController;" "$ADMIN_ROUTES"
-  fi
+cat > resources/views/partials/skymc_assets.blade.php << 'BLADE'
+@php use App\Models\SkyAddon; $addons=SkyAddon::where('enabled',1)->get(); @endphp
+@foreach($addons as $a)
+<link rel="stylesheet" href="{{ route('admin.addons.asset',['slug'=>$a->slug,'file'=>'style.css']) }}">
+<script src="{{ route('admin.addons.asset',['slug'=>$a->slug,'file'=>'script.js']) }}" defer></script>
+@endforeach
+BLADE
 
-  if ! grep -q "SkyMC Addons - Admin Addons Manager" "$ADMIN_ROUTES"; then
-    cat << 'PHP' >> "$ADMIN_ROUTES"
+ROUTES="routes/admin.php"
+if ! grep -q "SkyAddonController" "$ROUTES" 2>/dev/null; then
+  sed -i "/<?php/a use App\\\\Http\\\\Controllers\\\\SkyAddonController;" "$ROUTES"
+  cat >> "$ROUTES" << 'PHP'
 
-Route::prefix('/addons')->group(function () {
-    Route::get('/', [SkyAddonController::class, 'index'])->name('admin.addons.index');
-    Route::post('/toggle', [SkyAddonController::class, 'toggle'])->name('admin.addons.toggle');
-    Route::post('/delete', [SkyAddonController::class, 'delete'])->name('admin.addons.delete');
+Route::prefix('addons')->group(function(){
+    Route::get('/',[SkyAddonController::class,'index'])->name('admin.addons.index');
+    Route::post('/toggle',[SkyAddonController::class,'toggle'])->name('admin.addons.toggle');
+    Route::post('/delete',[SkyAddonController::class,'delete'])->name('admin.addons.delete');
+    Route::get('/asset/{slug}/{file}',[SkyAddonController::class,'asset'])->where('file','.*')->name('admin.addons.asset');
 });
-
-Route::get('/skymc/addons/{slug}/{file}', [SkyAddonController::class, 'asset'])
-    ->where(['slug' => '[A-Za-z0-9\-_]+', 'file' => '.+']);
 PHP
-  fi
 fi
 
-LAYOUT="resources/views/layouts/admin.blade.php"
-if [ -f "$LAYOUT" ]; then
-  echo -e "${YELLOW}[*] Patching admin layout...${NC}"
-
-  if ! grep -q "SkyMC Addons" "$LAYOUT"; then
-    perl -0pi -e 's#</ul>#    {{-- SkyMC Addons menu --}}\n    <li>\n        <a href="{{ route('\''admin.addons.index'\'') }}">\n            <i class="fa fa-puzzle-piece"></i> <span>SkyMC Addons</span>\n        </a>\n    </li>\n</ul>#s' "$LAYOUT" || true
-  fi
-
-  if ! grep -q "SkyMC: Inject CSS" "$LAYOUT"; then
-    perl -0pi -e 's#</head>#    {{-- SkyMC: Inject CSS for enabled addons --}}\n    @php($__skyAddons = \\App\\Models\\SkyAddon::where("enabled", true)->get())\n    @foreach($__skyAddons as $__addon)\n        @php($__cssPath = "/skymc/addons/" . $__addon->slug . "/style.css")\n        <link rel="stylesheet" href="{{ url($__cssPath) }}">\n    @endforeach\n</head>#s' "$LAYOUT" || true
-  fi
-
-  if ! grep -q "SkyMC: Inject JS" "$LAYOUT"; then
-    perl -0pi -e 's#</body>#    {{-- SkyMC: Inject JS for enabled addons --}}\n    @php($__skyAddonsJs = \\App\\Models\\SkyAddon::where("enabled", true)->get())\n    @foreach($__skyAddonsJs as $__addon)\n        @php($__jsPath = "/skymc/addons/" . $__addon->slug . "/script.js")\n        <script src="{{ url($__jsPath) }}"></script>\n    @endforeach\n</body>#s' "$LAYOUT" || true
-  fi
-else
-  echo -e "${RED}[!] Admin layout not found at $LAYOUT${NC}"
+if [ -f "resources/views/layouts/admin.blade.php" ]; then
+  grep -q "skymc_assets" resources/views/layouts/admin.blade.php || \
+  sed -i "/<\/head>/i @include('partials.skymc_assets')" resources/views/layouts/admin.blade.php
 fi
 
-echo -e "${YELLOW}[*] Running migrations...${NC}"
 php artisan migrate --force
 
-echo -e "${YELLOW}[*] Clearing caches...${NC}"
-php artisan view:clear || true
-php artisan route:clear || true
-php artisan config:clear || true
-php artisan cache:clear || true
+php << 'PHP'
+<?php
+require 'vendor/autoload.php';
+$app=require 'bootstrap/app.php';
+$kernel=$app->make(Illuminate\Contracts\Console\Kernel::class);
+$kernel->bootstrap();
+$dir=config('skymc.addons_path');
+foreach(scandir($dir) as $a){
+ if($a==='.'||$a==='..')continue;
+ if(is_dir($dir.'/'.$a)){
+  \App\Models\SkyAddon::firstOrCreate(
+    ['slug'=>$a],
+    ['name'=>ucfirst($a),'enabled'=>0]
+  );
+ }
+}
+PHP
 
-echo -e "${GREEN}[✓] SkyMC Addons installed successfully!${NC}"
-echo -e "${GREEN}    - Menu: Admin » SkyMC Addons${NC}"
-echo -e "${GREEN}    - Addons directory: ${SKY_DIR}/addons${NC}"
-echo -e "${GREEN}    - Assets served via /skymc/addons/{slug}/{file}${NC}"
+php artisan optimize:clear
+
+echo -e "${GREEN}[✓] SkyMC Installed Successfully${NC}"
+echo -e "${CYAN}Visit: /admin/addons${NC}"
