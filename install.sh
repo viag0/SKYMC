@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# ============================================
+# SkyMC One-Command Installer
+# https://github.com/viag0/SKYMC
+# ============================================
 
 set -e
 
@@ -14,12 +18,18 @@ echo "        https://github.com/viag0/SKYMC"
 echo "==============================================="
 echo -e "${NC}"
 
+# --------------------------------------------
+# Root check
+# --------------------------------------------
 if [ "$EUID" -ne 0 ]; then
   echo -e "${YELLOW}[!] Please run this installer as root:${NC}"
-  echo "sudo bash <(curl -fsSL https://raw.githubusercontent.com/viag0/SKYMC/main/install.sh)"
+  echo "sudo bash install.sh"
   exit 1
 fi
 
+# --------------------------------------------
+# Downloader check
+# --------------------------------------------
 DOWNLOADER=""
 
 if command -v curl >/dev/null 2>&1; then
@@ -31,16 +41,30 @@ else
   exit 1
 fi
 
+# --------------------------------------------
+# Download core installer
+# --------------------------------------------
 TMP_FILE="/tmp/skymc-core.sh"
 
 echo -e "${YELLOW}[*] Downloading SkyMC core installer...${NC}"
 $DOWNLOADER https://raw.githubusercontent.com/viag0/SKYMC/main/skymc-core.sh > "$TMP_FILE"
 
+if [ ! -s "$TMP_FILE" ]; then
+  echo -e "${RED}[!] Failed to download skymc-core.sh${NC}"
+  exit 1
+fi
+
 chmod +x "$TMP_FILE"
 
+# --------------------------------------------
+# Run core installer
+# --------------------------------------------
 echo -e "${YELLOW}[*] Running SkyMC installer...${NC}"
 bash "$TMP_FILE"
 
+# --------------------------------------------
+# Cleanup
+# --------------------------------------------
 rm -f "$TMP_FILE"
 
 echo -e "${GREEN}[✓] SkyMC installation completed successfully!${NC}"
