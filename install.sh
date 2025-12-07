@@ -38,7 +38,7 @@ $DOWNLOADER https://raw.githubusercontent.com/viag0/SKYMC/main/skymc-core.sh > "
 
 chmod +x "$TMP_FILE"
 
-lecho -e "${YELLOW}[*] Running SkyMC installer...${NC}"
+echo -e "${YELLOW}[*] Running SkyMC installer...${NC}"
 bash "$TMP_FILE"
 
 rm -f "$TMP_FILE"
